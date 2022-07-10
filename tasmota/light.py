@@ -1,4 +1,4 @@
-from tasmota import Tasmota, Command
+from tasmota.tasmota import Tasmota, Command
 
 '''
 Control a Tasmota light

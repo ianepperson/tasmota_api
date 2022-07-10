@@ -1,5 +1,11 @@
-import requests
 # Basic control of a Tasmota device
+
+import logging
+
+import requests
+
+
+log = logging.getLogger(__name__)
 
 
 class Command:
@@ -29,6 +35,13 @@ class Command:
         self._commands.append(command)
         return self
 
+    # ### Behave as a context manager ### #
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.go()
+
     # ### Control ### #
 
     def blink_count(self, count):
@@ -37,6 +50,14 @@ class Command:
     def power(self, state: bool):
         str_state = 'on' if state else 'off'
         return self._go(f'Power {str_state}')
+
+    def power1(self, state: bool):
+        str_state = 'on' if state else 'off'
+        return self._go(f'Power1 {str_state}')
+
+    def power2(self, state: bool):
+        str_state = 'on' if state else 'off'
+        return self._go(f'Power2 {str_state}')
 
     # ### Management ### #
 
@@ -61,18 +82,132 @@ class Command:
 class Tasmota:
     def __init__(
         self,
-        ip_address: str,
+        ip_address: str = None,
         user: str = None,
         password: str = None,
+        topic: str = None,
+        mqtt_client=None
     ):
         self.ip_address = ip_address
         self.user = user
         self.password = password
 
-    def send(self, command: str | list[str]) -> dict:
-        if isinstance(command, list):
-            # Multiple commands are stacked with "Backlog"
-            return self.backlog(command)
+        self._change_listeners = {}
+
+        self.topic = topic
+        self._mqtt_client = None
+        self._set_mqtt_client(mqtt_client)
+
+        if not self.mqtt_client and not ip_address:
+            raise ValueError('Must set mqtt_client or ip_address')
+
+        if self.mqtt_client and not self.topic:
+            raise ValueError('Must define a topic when using the mqtt_client')
+
+    @property
+    def mqtt_client(self):
+        return self._mqtt_client
+
+    @mqtt_client.setter
+    def mqtt_client(self, client):
+        self._set_mqtt_client(client)
+
+    def _set_mqtt_client(self, client):
+        if self._mqtt_client != client and self._mqtt_client:
+            # de-register from old client
+            try:
+                del self._mqtt_client.userdata[self]
+            except KeyError:
+                pass
+
+        self._mqtt_client = client
+        if not client:
+            # If it was set to None, perform no more actions
+            return
+
+        if not client._userdata:
+            client.user_data_set({})
+            self._setup_mqtt_client(client)
+        client._userdata[self.topic] = self
+
+    @classmethod
+    def _mqtt_on_connect(cls, client, userdata, flags, rc):
+        # subscribe to all channels
+        log.info('MQTT Connected. Listening for any changes')
+        client.subscribe('#')
+
+    @classmethod
+    def _mqtt_on_message(cls, client, userdata, msg):
+        # All status messages start with "stat/"
+        # topic="stat/tasmota_197CD7/POWER1" payload="ON"
+
+        log.debug(f'MQTT Received {msg.topic} :: {msg.payload}')
+
+        if not msg or not msg.topic or not msg.topic.startswith('stat/'):
+            return
+
+        try:
+            prefix, topic, command = msg.topic.split('/')
+        except ValueError:
+            # If we don't have the expected count of values
+            return
+
+        if not userdata:
+            return
+
+        instance = userdata.get(topic)
+        if not instance:
+            return
+
+        # Invoke the callback functions
+        instance._on_change(client, command, msg.payload.decode())
+
+    def _on_change(self, client, command, payload):
+        '''
+        Handle the change event message.
+        '''
+        log.debug(f'_on_change event for {self.topic} :: {command}')
+        # Call the change listener if set
+        change_listener = self._change_listeners.get(command)
+        if change_listener:
+            change_listener(client, command, payload)
+        else:
+            log.info(f'No change handler for command {command}')
+
+        # The all changes listener has an index of None
+        all_changes_listener = self._change_listeners.get(None)
+        if all_changes_listener:
+            all_changes_listener(client, command, payload)
+
+    @classmethod
+    def _setup_mqtt_client(cls, client):
+        client.on_connect = cls._mqtt_on_connect
+        client.on_message = cls._mqtt_on_message
+
+    def on_change(self, subscribed_change=None):
+        '''
+        A decorator to define a function to handle message changes
+
+        to use:
+        @my_button.on_change('POWER1')
+        def my_handler(client, property, value):
+            pass
+
+
+        To subscribe to all changes, use
+        @my_button.on_change()
+
+        Only the most recent handler will be registered. Later
+        handlers supercede earlier ones. That is, there can only
+        be one subscriber per type of change.
+        '''
+        def wrapped_fn(fn):
+            log.debug(f'Subscribing to {subscribed_change}')
+            self._change_listeners[subscribed_change] = fn
+            return fn
+        return wrapped_fn
+
+    def _send_http(self, command: str) -> dict:
         params = {'cmnd': command}
         if self.user is not None:
             params['user'] = self.user
@@ -81,10 +216,33 @@ class Tasmota:
 
         url = f'http://{self.ip_address}/cm'
 
+        log.info(f'HTTP Sending {url} :: {params}')
+
         response = requests.get(url, params=params)
         response.raise_for_status()
 
         return response.json()
+
+    def _send_mqtt(self, command: str) -> dict:
+        cmd, payload = command.split(' ', maxsplit=1)
+        cmd = cmd.upper()
+        topic = f'cmnd/{self.topic}/{cmd}'
+        log.info(f'MQTT Sending {topic} :: {cmd}')
+        self.mqtt_client.publish(topic, payload=payload)
+        return {}
+
+    def send(self, command: str | list[str]) -> dict:
+        if isinstance(command, list):
+            # Multiple commands are stacked with "Backlog"
+            return self.backlog(command)
+
+        log.debug(f'Sending {command}')
+        if self.mqtt_client:
+            return self._send_mqtt(command)
+        elif self.ip_address:
+            return self._send_http(command)
+        else:
+            log.warning('No HTTP nor MQTT to send to!')
 
     def backlog(self, commands: list[str], zero=False) -> dict:
         '''
