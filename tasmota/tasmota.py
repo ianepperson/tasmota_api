@@ -104,6 +104,13 @@ class Tasmota:
         if self.mqtt_client and not self.topic:
             raise ValueError('Must define a topic when using the mqtt_client')
 
+        # Indicate if light is on MQTT server. None=don't know.
+        self._online = None
+
+    @property
+    def online(self):
+        return self._online
+
     @property
     def mqtt_client(self):
         return self._mqtt_client
@@ -116,7 +123,7 @@ class Tasmota:
         if self._mqtt_client != client and self._mqtt_client:
             # de-register from old client
             try:
-                del self._mqtt_client.userdata[self]
+                del self._mqtt_client._userdata[self]
             except KeyError:
                 pass
 
@@ -125,6 +132,7 @@ class Tasmota:
             # If it was set to None, perform no more actions
             return
 
+        # Use the client userdata to store a ref to this object
         if not client._userdata:
             client.user_data_set({})
             self._setup_mqtt_client(client)
@@ -167,6 +175,13 @@ class Tasmota:
         Handle the change event message.
         '''
         log.debug(f'_on_change event for {self.topic} :: {command}')
+
+        if command == 'LWT':
+            if payload.lower() == 'online':
+                self._online = True
+            elif payload.lower() == 'offline':
+                self._online = False
+
         # Call the change listener if set
         change_listener = self._change_listeners.get(command)
         if change_listener:
