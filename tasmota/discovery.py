@@ -66,9 +66,9 @@ class Discover:
 
     def _discovery_msg(self, msg):
         try:
-            _, _, sn, msg_type = msg.topic
+            _, _, sn, msg_type = msg.topic.split('/')
         except ValueError:
-            log.debug(f'_discovery_msg unkown format for {msg.topic}')
+            log.debug(f'_discovery_msg unknown format for {msg.topic}')
             return
 
         device = self.devices.get(sn)

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tasmota"
-version = "0.2.2"
+version = "0.2.3"
 description = "Connect to and control Tasmota devices directly via the REST API or via an MQTT server."
 authors = ["Ian Epperson <ian@epperson.com>"]
 license = "MIT"
