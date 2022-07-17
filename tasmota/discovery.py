@@ -104,7 +104,7 @@ class Discover:
             self._other_on_connect(*args, **kwargs)
 
     def _on_message(self, client, userdata, msg):
-        if userdata.startswith('tasmota/discovery/'):
+        if msg.topic.startswith('tasmota/discovery/'):
             log.debug(f'received discovery message')
             self._discovery_msg(msg)
 
