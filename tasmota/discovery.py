@@ -1,4 +1,8 @@
 import json
+import logging
+
+
+log = logging.getLogger(__name__)
 
 
 class Device:
@@ -48,6 +52,9 @@ class Discover:
         self._other_on_message = mqtt_client.on_message
         self._new_device_callbacks = []
 
+        mqtt_client.on_connect = self._on_connect
+        mqtt_client.on_message = self._on_message
+
     @property
     def on_new_device(self):
         return self._new_device_callbacks
@@ -61,13 +68,14 @@ class Discover:
         try:
             _, _, sn, msg_type = msg.topic
         except ValueError:
-            # unknown format
+            log.debug(f'_discovery_msg unkown format for {msg.topic}')
             return
 
         device = self.devices.get(sn)
         if not device:
             device = Device(sn, self.client)
             self.devices[sn] = device
+            log.info(f'discovered new device "{sn}"')
             for fn in self._new_device_callbacks:
                 fn(device)
 
@@ -75,9 +83,11 @@ class Discover:
             try:
                 config = json.loads(msg.payload)
             except Exception:
-                # bad payload
+                log.debug(f'_discovery_msg bad format for {msg.payload}')
                 return
+
             device.config = config
+            log.debug(f'updated config for {sn}')
 
         elif msg_type.lower() == 'sensors':
             try:
@@ -85,6 +95,8 @@ class Discover:
             except Exception:
                 # bad payload
                 return
+
+            log.debug(f'updated sensors for {sn}')
             device.sensors = sensors.get('sn', {})
 
     def _on_connect(self, *args, **kwargs):
@@ -93,6 +105,7 @@ class Discover:
 
     def _on_message(self, client, userdata, msg):
         if userdata.startswith('tasmota/discovery/'):
+            log.debug(f'received discovery message')
             self._discovery_msg(msg)
 
         if self._other_on_message:
